@@ -10,7 +10,16 @@ const fs   = require("fs");
 const path = require("path");
 
 const PORT   = process.env.PORT || 3000;
-const PAGE   = path.join(__dirname, "regnum.html");
+/* the game page: regnum.html by preference, otherwise any .html sitting here */
+function findPage(){
+  const wanted = ["regnum.html", "index.html"];
+  for (const w of wanted) {
+    const f = path.join(__dirname, w);
+    if (fs.existsSync(f)) return f;
+  }
+  const html = fs.readdirSync(__dirname).filter(f => /\.html?$/i.test(f)).sort();
+  return html.length ? path.join(__dirname, html[0]) : null;
+}
 const MAXAGE = 12 * 60 * 60 * 1000;   /* a table left untouched for 12 hours is cleared away */
 const MAXDOC = 800 * 1024;            /* a single table's state */
 const MAXROOMS = 400;
@@ -63,28 +72,74 @@ const server = http.createServer((req, res) => {
 
   /* the game itself */
   if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
-    return fs.readFile(PAGE, (err, buf) => {
-      if (err) return send(res, 500, "regnum.html is missing next to server.js", "text/plain");
+    const page = findPage();
+    if (!page) {
+      const here = fs.readdirSync(__dirname).join("\n  ");
+      return send(res, 500,
+        "No .html file found next to server.js.\n\nFiles I can see:\n  " + here +
+        "\n\nUpload the game page (regnum.html) into the same folder.",
+        "text/plain; charset=utf-8");
+    }
+    return fs.readFile(page, (err, buf) => {
+      if (err) return send(res, 500, "Could not read " + path.basename(page), "text/plain");
       send(res, 200, buf, "text/html; charset=utf-8");
     });
+  }
+
+  /* what is actually deployed — handy when something is missing */
+  if (req.method === "GET" && url.pathname === "/api/files") {
+    const page = findPage();
+    return send(res, 200, { serving: page ? path.basename(page) : null, files: fs.readdirSync(__dirname) });
   }
 
   /* is there a server on this origin? */
   if (url.pathname === "/api/ping") return send(res, 200, { ok: true, rooms: store.size });
 
-  /* read one document */
+  /* read one document.  With ?since=N the reply is held back until the
+     document moves past version N, so the other players see a move almost
+     at once instead of waiting for the next poll. */
   if (req.method === "GET" && url.pathname === "/api/doc") {
     const p = url.searchParams.get("path");
     if (!okPath(p)) return send(res, 400, { error: "bad path" });
-    const hit = store.get(p);
-    return send(res, 200, hit ? { exists: true, data: hit.data } : { exists: false, data: null });
+    const sinceRaw = url.searchParams.get("since");
+    const since = sinceRaw === null ? null : parseInt(sinceRaw, 10);
+    const now = () => {
+      const hit = store.get(p);
+      return hit ? { exists: true, data: hit.data } : { exists: false, data: null };
+    };
+    const version = () => {
+      const hit = store.get(p);
+      return hit && hit.data && typeof hit.data.v === "number" ? hit.data.v : -1;
+    };
+    if (since === null || isNaN(since) || version() > since) return send(res, 200, now());
+
+    /* hold the line */
+    const started = Date.now();
+    let closed = false;
+    req.on("close", () => { closed = true; });
+    const tick = setInterval(() => {
+      if (closed) return clearInterval(tick);
+      if (version() > since || Date.now() - started > 25000) {
+        clearInterval(tick);
+        if (!closed) send(res, 200, now());
+      }
+    }, 120);
+    return;
   }
 
-  /* write one document */
+  /* write one document.  A table only moves forward: a write built on an
+     older version is refused, so two players acting at once cannot end up
+     with different games. */
   if (req.method === "POST" && url.pathname === "/api/doc") {
     return readBody(req, MAXDOC, (err, body) => {
       if (err) return send(res, 400, { error: "bad body" });
       if (!okPath(body && body.path)) return send(res, 400, { error: "bad path" });
+      const hit = store.get(body.path);
+      const have = hit && hit.data && typeof hit.data.v === "number" ? hit.data.v : -1;
+      const want = body.data && typeof body.data.v === "number" ? body.data.v : null;
+      if (want !== null && have >= want) {
+        return send(res, 409, { error: "stale", current: hit ? hit.data : null });
+      }
       store.set(body.path, { data: body.data, at: Date.now() });
       send(res, 200, { ok: true });
     });
