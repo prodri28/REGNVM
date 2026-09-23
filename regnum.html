@@ -1460,9 +1460,13 @@ function rivalView(o,rs){
  return h+'</div>';}
 
 function boardView(){
+ const waiting=(NET.on&&!iMayAct());
  const p=P(),R=ruler(p.ruler),s=SEAT[G.active];
  const turnsLeft=G.turns-p.turnsTaken;
- let h='';
+ let h=(waiting
+   ? '<div class="plate" style="text-align:center;border-color:'+SEAT[G.active].main+';background:rgba(0,0,0,.04)">'+
+     '<span class="sm">'+tr("Waiting for")+' <b style="color:'+SEAT[G.active].main+'">'+tr(G.players[G.active].name)+'</b>\u2026</span></div>'
+   : '');
  rivalSeats().forEach(si=>{
   const o=G.players[si], rs=SEAT[si], open=(ui.rival===si);
   h+='<button class="strip" style="width:100%;border-color:'+(open?rs.main:"var(--edge)")+'" data-act="toggle" data-arg="rival'+si+'"><div style="display:flex;align-items:center;gap:7px">'+rulerSym(o.ruler,rs.main,18)+'<span class="sm">'+tr(o.name)+' \u00b7 '+tr(ruler(o.ruler).name)+'</span></div>'+
@@ -1552,7 +1556,12 @@ function boardView(){
   '<div class="sm">'+cost(finalCost(x,p.ruler))+' \u2192 '+x.reward+' '+tr('legacy')+workExtra(x)+
   (x.mourned?' <span style="color:var(--crimson)">\u2212'+x.mourned+' '+tr("for the fallen")+'</span>':'')+'</div>',"var(--forest)","",false,workEmb(x));});
  if(p.crises.length||p.projects.length)h+='</div>';
- return h+'</div>';}
+ h+='</div>';
+ /* while another realm acts, the board is shown but sealed */
+ return waiting
+  ? '<div style="position:relative"><div style="opacity:.5;pointer-events:none">'+h+'</div>'+
+    '<div style="position:absolute;inset:0;z-index:5"></div></div>'
+  : h;}
 
 function zoneView(){
  const p=P(),R=ruler(p.ruler),s=SEAT[G.active];
@@ -2913,7 +2922,7 @@ function localise(){
 /* ===================== THE TABLE ACROSS THE ROOM =====================
    One shared record per room. Only the realm whose turn it is writes to it;
    everyone else reads it every couple of seconds and redraws.            */
-const BUILD="54.0";
+const BUILD="55.0";
 const NET={on:false,room:null,seat:null,host:false,ver:0,seats:null,playing:null,poll:null,busy:false,note:""};
 const ROOMKEY=c=>"regnum:room:"+c;
 let DB=null, DB_READY=false, DB_ERR="", DB_KIND="";
@@ -3220,7 +3229,7 @@ const TUTOR_WHEN_SEEN=[
 ];
 
 function currentTut(){
- if(!G||G.over||isBot(G.active)||G.welcome||G.tutEnd||ui.tutDone)return null;
+ if(!G||G.over||NET.on||isBot(G.active)||G.welcome||G.tutEnd||ui.tutDone)return null;
  const p=P(); if(p.tutStep==null)p.tutStep=0;
  let i=p.tutStep;
  /* an optional step whose moment never came must not hold up the rest */
@@ -3799,18 +3808,25 @@ function scheduleBot(){
 const NEEDS=key=>false;   /* the first-turn tutorials are retired — nothing intercepts an action */
 document.addEventListener("click",e=>{
  const el=e.target.closest("[data-act]");if(!el)return;
- const free=["toggle","cycleSpeed","pause","lang","full","host","find","joinRoom","selftest","typeLetter","typeBack","typeJoin","setLen","setRivals","setColour","setOppAt","closeRound","cardSeen","tutNext","tutSkip","welcomeGo","skipTutorial","tutorialOver","pardonPick","pardonCancel","scribePick","scribeReset","sendEnvoy","previewWork","closeWork","confirmHeir","previewHeir","closeHeir"];
+  const local=LOCAL_ACTS;
+ const free=LOCAL_ACTS.concat(["setRivals","setOppAt","tutNext","tutSkip","welcomeGo","skipTutorial","tutorialOver"]);
  if(currentTut()&&el.dataset.act!=="tutNext"&&el.dataset.act!=="tutSkip")return;
  if(G&&G.cardUp&&el.dataset.act!=="cardSeen"&&["toggle","lang","pause","full","tutNext","tutSkip"].indexOf(el.dataset.act)<0){
   G.cardUp=null; render(); return;   /* never let an unseen card lock the board */
  }
- if(NET.on&&!iMayAct()&&free.indexOf(el.dataset.act)<0)return;
+ if(NET.on&&!iMayAct()&&local.indexOf(el.dataset.act)<0)return;
  if(G&&isBot(G.active)&&!G.over&&!G.prompt&&!G.roundRecap&&free.indexOf(el.dataset.act)<0)return;
  const act=el.dataset.act,arg=el.dataset.arg,key=el.dataset.key;
 
  run(act,arg);});
 
+/* these change this screen only, never the shared game */
+const LOCAL_ACTS=["toggle","cycleSpeed","pause","lang","full","host","find","joinRoom","selftest",
+  "typeLetter","typeBack","typeJoin","setLen","setColour","seatKind","startOnline","closeRound","cardSeen"];
+
 function run(act,arg){
+ /* at a shared table, only the realm being waited on may move the game */
+ if(NET.on&&!iMayAct()&&LOCAL_ACTS.indexOf(act)<0)return;
  switch(act){
   case"setLen":ui.setup=arg;break;
   case"setRivals":ui.rivals=parseInt(arg,10);break;
